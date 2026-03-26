@@ -26,7 +26,7 @@ def build_phmr(cfg):
     cam_encoder = CameraEncoder(patch_size=cfg.MODEL.PATCH_SIZE,
                                 img_size=cfg.MODEL.IMG_SIZE)
     
-    # Prompot Encoder
+    # Prompt Encoder
     clip_encoder = ClipEncoder()
     prompt_encoder = PromptEncoder(
         embed_dim=prompt_embed_dim,

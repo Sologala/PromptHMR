@@ -66,10 +66,14 @@ class Pipeline:
 
     def run_detect_track(self, ):
         if self.cfg.tracker == 'bytetrack':
+            print("running detect_track with bytetrack")
             tracks = detect_track(self.images,
                                   bbox_interp=self.cfg.bbox_interp)
+            print("tracking done: ", tracks)
+            print("run segmenting")
             masks = segment.segment_subjects(self.images)
-
+            print("segmenting done: ", masks)
+            
         elif self.cfg.tracker == 'sam2':
             tracks, masks = detect_segment_track_sam(
                 self.images, 

@@ -134,12 +134,12 @@ def prepare_inputs(sample_path, output_folder=None, max_height=None, max_fps=Non
     else:
         seq_folder = output_folder
         img_folder = f'{seq_folder}/images'
-    
+
     if os.path.exists(seq_folder):
         # assert len(glob.glob(f'{img_folder}/*.jpg')) > 0, f"{img_folder} is empty"
         if len(glob.glob(f'{img_folder}/*.jpg')) > 0:
             return sorted(glob.glob(f'{img_folder}/*.jpg')), seq_folder, img_folder, fps
-    
+
     os.makedirs(seq_folder, exist_ok=True)
     
     if isdir:
