@@ -42,13 +42,18 @@ def video2frames(vidfile, save_folder=None, max_height=None, return_images=False
     
     cap = cv2.VideoCapture(vidfile)
     cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
-    
+
+    bar = tqdm(desc="Converting video to frames", disable=tqdm_disabled.get(
+    ), total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-                
+
+            bar.update(1)
             frame_index += 1
             
             # Skip frames based on frame_skip parameter
@@ -69,7 +74,7 @@ def video2frames(vidfile, save_folder=None, max_height=None, return_images=False
             
     finally:
         cap.release()
-    
+    print(f"video 2  frame done, frame count is: {count}")    
     return count, np.array(frames)
 
 
@@ -217,6 +222,7 @@ def load_video_frames(video_path, output_folder=None, max_height=None, max_fps=N
 
     print(f"Processing video file {video_path}")
     codec = get_video_codec(video_path)
+
     if codec == "av1":
         print("Converting AV1 to H.264...")
         video_path = convert_av1_to_h264(video_path)
@@ -245,8 +251,10 @@ def load_video_frames(video_path, output_folder=None, max_height=None, max_fps=N
         seq_folder = output_folder
     
     os.makedirs(seq_folder, exist_ok=True)
+    print(f"create sequence folder {seq_folder}")
 
-    nframes, frames = video2frames(video_path, max_height=max_height, return_images=True, frame_skip=frame_skip)
+    nframes, frames = video2frames(
+        video_path, max_height=max_height, return_images=True, frame_skip=frame_skip)
     print(f"Loaded {nframes} frames, fps: {target_fps}")
     frames = np.array(frames)
     return frames, seq_folder, target_fps

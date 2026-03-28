@@ -8,7 +8,7 @@ from collections import defaultdict
 from scipy.interpolate import make_interp_spline, interp1d
 
 from .image_folder import ImageFolder
-
+from tqdm import tqdm
 
 def est_camera(image):
     if isinstance(image, str):
@@ -32,9 +32,61 @@ def est_calib(images):
     return calib
 
 
+def _draw_tracker_visualization(img, detections):
+    """ Draw tracker visualization on image """
+    colors = [
+        (0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0), (255, 0, 255),
+        (0, 255, 255), (0, 0, 128), (0, 128, 0), (128, 0, 0), (128, 128, 0),
+        (128, 0, 128), (0, 128, 128), (255, 128, 0), (255, 0, 128), (128, 255, 0),
+        (0, 255, 128), (128, 0, 255), (0, 128, 255), (255, 128, 128), (128, 255, 128),
+    ]
+    
+    annotated_frame = img[:,:,::-1].copy()
+    height, width, layers = annotated_frame.shape
+    
+    # Draw detections
+    for det_idx in range(len(detections)):
+        if detections.confidence is not None and len(detections.confidence) > det_idx:
+            conf = detections.confidence[det_idx]
+        else:
+            conf = 1.0
+        
+        tid = detections.tracker_id[det_idx].item() if detections.tracker_id[det_idx] is not None else det_idx
+        bbox = detections.xyxy[det_idx].cpu().numpy() if hasattr(detections.xyxy[det_idx], 'cpu') else detections.xyxy[det_idx]
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        # Select color based on tracker ID
+        color = colors[int(tid) % len(colors)]
+        
+        # Draw bounding box
+        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+        
+        # Draw ID and confidence
+        label = f"ID:{int(tid)} Conf:{conf:.2f}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 1
+        
+        # Get text size for background
+        text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+        text_x = x1
+        text_y = y1 - 5
+        
+        # Draw background rectangle for text
+        cv2.rectangle(annotated_frame, 
+                    (text_x, text_y - text_size[1] - 4),
+                    (text_x + text_size[0] + 4, text_y + 4),
+                    color, -1)
+        
+        # Draw text
+        cv2.putText(annotated_frame, label, (text_x + 2, text_y - 2),
+                    font, font_scale, (255, 255, 255), thickness)
+    return annotated_frame
+
+
 def detect_track(images, savedir=None, visualization=False,
-                 yolo_thresh=0.10, 
-                 bytetrack_thresh=0.25, 
+                 yolo_thresh=0.10,
+                 bytetrack_thresh=0.25,
                  bytetrack_match=0.8,
                  bbox_interp=False):
 
@@ -45,12 +97,12 @@ def detect_track(images, savedir=None, visualization=False,
                             minimum_matching_threshold=bytetrack_match)
     tracks = defaultdict(lambda: defaultdict(list))
 
-    for i in range(len(images)):
+    for i in tqdm(range(len(images))):
         img = images[i]
         if isinstance(img, str):
-            img = cv2.imread(images[i])[:,:,::-1]
-            
-        results = yolo(img, verbose=False, classes=0, conf=yolo_thresh)[0] 
+            img = cv2.imread(images[i])[:, :, ::-1]
+
+        results = yolo(img, verbose=False, classes=0, conf=yolo_thresh)[0]
         detections = sv.Detections.from_ultralytics(results)
         detections = tracker.update_with_detections(detections)
 
@@ -63,20 +115,19 @@ def detect_track(images, savedir=None, visualization=False,
 
         # Save visualization
         if visualization:
-            annotated_frame = box_annotator.annotate(img[:,:,::-1].copy(), 
-                                                    detections=detections,
-                                                    custom_color_lookup=detections.tracker_id
-                                                    )
-            height, width, layers = annotated_frame.shape
+            height, width, layers = img.shape
             size = (width, height)
+            annotated_frame = _draw_tracker_visualization(img, detections)
 
             try:
                 out.write(annotated_frame)
             except Exception:
-                print('Start writing video ...')
                 video_path = f'{savedir}/vis.mp4'
+                print(f'Start writing video to {video_path} ...')
                 fourcc, fps = cv2.VideoWriter_fourcc(*'mp4v'), 30
                 out = cv2.VideoWriter(video_path, fourcc, fps, size)
+
+    print(f"Total tracks: {len(tracks)}")
 
     for k in tracks:
         masks = np.stack(tracks[k]['masks'])
@@ -495,6 +546,29 @@ def compute_oks(src_keypoints, src_roi, dst_keypoints, dst_roi):
 
     return e
 
+
+def interpolate_bboxes_no_mask(bboxes, frames, fn='linear'):
+    '''
+    bboxes: numpy array of shape (len(frames), 4) representing the bounding boxes in x, y, x, y format
+    frames: example [0, 1, 2, 8, 9, 10] -> here the frames 3-7 are missing and should be interpolated
+    '''
+    
+    # Create a continuous range of frames
+    all_frames = np.arange(frames[0], frames[-1] + 1)
+    
+    # Interpolate bounding boxes
+    if fn == 'spline':
+        interp_bboxes = make_interp_spline(frames, bboxes, k=3)(all_frames)
+    elif fn == 'linear':
+        # Use scipy's interp1d for linear interpolation
+        interp_func = interp1d(frames, bboxes, axis=0, kind='linear')
+        interp_bboxes = interp_func(all_frames)
+    else:
+        raise ValueError("Invalid interpolation function. Choose 'spline' or 'linear'.")   
+    
+    indices = frames - all_frames[0]
+
+    return interp_bboxes, all_frames
 
 def interpolate_bboxes(bboxes, frames, masks, fn='linear'):
     '''

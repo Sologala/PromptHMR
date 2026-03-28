@@ -163,7 +163,7 @@ def checkerboard_geometry(
     length=12.0,
     color0=[0.8, 0.9, 0.9],
     color1=[0.6, 0.7, 0.7],
-    tile_width=0.5,
+    tile_width=1.0,
     alpha=1.0,
     up="y",
     c1=0.0,

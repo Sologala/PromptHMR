@@ -15,16 +15,17 @@ from prompt_hmr.vis.traj import get_floor_mesh
 from pipeline import Pipeline
 
 
-def main(input_video='data/examples/boxing_short.mp4', 
+def main(input_video='data/examples/boxing_short.mp4',
          static_camera=False,
          run_viser=False,
-         viser_total=1500, 
+         viser_total=1500,
          viser_subsample=1,
          output_folder=None):
     print("starting demo_video.py")
     smplx = SMPLX_Layer(SMPLX_PATH).cuda()
     if output_folder is None:
-        output_folder = 'results/' + os.path.basename(input_video).split('.')[0]
+        output_folder = 'results/' + \
+            os.path.basename(input_video).split('.')[0]
     else:
         output_folder = output_folder
 

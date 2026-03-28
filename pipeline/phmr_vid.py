@@ -53,6 +53,7 @@ class PromptHMR_Video():
         dataset = PromptHMRVideoDataset(images, tracks, cam_intrinsic)
         dataloader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=0, collate_fn=lambda x: x)
 
+        # 先创建空列表
         for k, v in tracks.items():
             tracks[k]['smplx_pose'] = []
             tracks[k]['smplx_transl'] = []
@@ -63,7 +64,24 @@ class PromptHMR_Video():
         for batch in dataloader:
             with autocast('cuda'):
                 output = self.model(batch, mask_prompt=mask_prompt)
-            
+            """ model output :
+             print(list(output[0].keys()))
+             [
+               'pose',: phmr 模型预测的6d 旋转 22 x 6
+               'rotmat': 转换为3x3的旋转矩阵 22 x 3 x 3
+               'betas',: phmr 模型预测的 shape 参数 10
+               'transl': phmr 模型预测的 相机系下 平移 3 
+               'transl_c', ：phmr 模型预测的归一化相机系下的 pxy
+               'inv_depth_c', : phmr 预测的 逆深度
+               'cam_int', : 相机内参
+               'features', ： feature是在smpl decoder trasnformat 输出的featuremap，用于经过一个MLP回归以上的参数
+               'vertices', : smpl化后的mesh顶点坐标
+               'body_joints', : smplx化后的body joints坐标
+               'body_joints2d',: smplx化后的body joints 相机 2d坐标
+               'smpl_vertices', 'smpl_joints', 'smpl_joints2d', 'smpl_j3d' :转换为 smpl后的mesh以及骨架，以及2d点
+            """
+
+            # 将信息都存放到tracks中
             for bid in range(len(batch)):
                 track_id = batch[bid]['track_ids']
 
@@ -73,7 +91,8 @@ class PromptHMR_Video():
                     tracks[tid]['smplx_transl'].append(output[bid]['transl'][btid])
                     tracks[tid]['smplx_betas'].append(output[bid]['betas'][btid])
                     tracks[tid]['prhmr_img_feats'].append(output[bid]['features'][btid])
-                
+
+        # 把同一个id的pose, transl, betas, img_feats都stack起来
         for k, v in tracks.items():
             tracks[k]['smplx_pose'] = torch.stack(tracks[k]['smplx_pose']).float()
             tracks[k]['smplx_transl'] = torch.stack(tracks[k]['smplx_transl']).float()

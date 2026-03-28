@@ -36,11 +36,10 @@ def add_camera_frustm(image, server, quat, trans):
         for cam in camera_frustums:
             cam.scale = gui_frustum_scale.value
 
-
     # dummy instrinsics
     fov = 0.96
     aspect = 1.7 if image is None else image.shape[1]/image.shape[0]
-    
+
     camera_frustums = []
     camera_frustm = server.scene.add_camera_frustum(
         f"/image",
@@ -56,15 +55,15 @@ def add_camera_frustm(image, server, quat, trans):
     camera_frustums.append(camera_frustm)
 
 
-def viser_vis_human(vertices: torch.Tensor, faces: torch.Tensor, 
+def viser_vis_human(vertices: torch.Tensor, faces: torch.Tensor,
                     image=None, cameras=None, floor=None, block=True, track_id=None):
-    
+
     if type(vertices) is torch.Tensor:
         vertices = vertices.cpu().numpy()
     if type(faces) is torch.Tensor:
         faces = faces.cpu().numpy()
-   
-    human_vertices = {i:v for i,v in enumerate(vertices)}
+
+    human_vertices = {i: v for i, v in enumerate(vertices)}
     human_vertices = copy.deepcopy(human_vertices)
     if track_id is not None:
         human_idx = track_id
@@ -77,14 +76,14 @@ def viser_vis_human(vertices: torch.Tensor, faces: torch.Tensor,
         server = viser.ViserServer()
 
     server.scene.world_axes.visible = True
-    server.scene.set_up_direction("+y")
+    server.scene.set_up_direction("+z")
 
     # Add GUI elements.
     timing_handle = server.gui.add_number("Time (ms)", 0.01, disabled=True)
 
     for i, human_name in enumerate(sorted(human_vertices.keys())):
         idx = human_idx[i]
-        vertices = human_vertices[human_name]    
+        vertices = human_vertices[human_name]
         server.scene.add_mesh_simple(
             f"/{human_name}_human/mesh",
             vertices=vertices,
@@ -130,8 +129,8 @@ def viser_vis_human(vertices: torch.Tensor, faces: torch.Tensor,
         start_time = time.time()
         while True:
             time.sleep(0.01)
-            timing_handle.value = (time.time() - start_time) 
-    
+            timing_handle.value = (time.time() - start_time)
+
     return server
 
 
@@ -143,7 +142,7 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
         server = viser.ViserServer()
 
     server.scene.world_axes.visible = True
-    server.scene.set_up_direction("+y")
+    server.scene.set_up_direction("+z")
 
     num_frames = len(world4d)
     gui_timestep = server.gui.add_slider(
@@ -202,17 +201,21 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
     # Load in frames.
     server.scene.add_frame(
         "/frames",
-        # wxyz=vtf.SO3.exp(np.array([np.pi / 2.0, 0.0, 0.0])).wxyz,
-        wxyz=vtf.SO3.exp(np.array([0.0, 0.0, 0.0])).wxyz,
+        wxyz=vtf.SO3.exp(np.array([np.pi / 2.0, 0.0, 0.0])).wxyz,
+        # wxyz=np.array([1.0, 0.0, 0.0, 0.0]),
         position=(0, 0, 0),
         show_axes=False,
     )
     frame_nodes: list[viser.FrameHandle] = []
     mesh_nodes: list[viser.MeshHandle] = []
+    mesh_nodes_in_cam_frame: list[viser.MeshHandle] = []
 
     for i in tqdm(range(num_frames)):
+        if i % 100 != 0:
+            continue
         # Add base frame.
-        frame_nodes.append(server.scene.add_frame(f"/frames/t{i}", show_axes=False))
+        frame_nodes.append(server.scene.add_frame(
+            f"/frames/t{i}", show_axes=False))
 
         # Place meshes in the frame
         track_id = world4d[i]['track_id']
@@ -234,13 +237,21 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
         # Place the frustum.
         image = images[i]
         camera = world4d[i]['camera']
-        quat = R.from_matrix(camera[:3, :3]).as_quat()
-        quat = np.concatenate([quat[3:], quat[:3]])
-        trans = camera[:3, 3]
+        print("camera ", camera)
+        print(vertices[0][i])
+        Q_wc = R.from_matrix(camera[:3, :3]).as_quat()
+        Q_wc = np.concatenate([Q_wc[3:], Q_wc[:3]])
+        t_wc = camera[:3, 3]
+
+        R_cw = R.from_matrix(camera[:3, :3]).inv().as_matrix()
+        t_cw = - (R_cw @ t_wc)
+        print(R_cw, t_cw)
+        print("shape", t_cw.shape)
 
         if max(image.shape) > img_maxsize:
             scale = img_maxsize / max(image.shape)
-            image = cv2.resize(image, None, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            image = cv2.resize(image, None, None, fx=scale,
+                               fy=scale, interpolation=cv2.INTER_AREA)
 
         fov = 0.96
         aspect = 1.7 if image is None else image.shape[1]/image.shape[0]
@@ -251,8 +262,8 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
             line_width=1.5,
             color=(255, 127, 14),
             scale=0.4,
-            wxyz=quat,
-            position=trans,
+            wxyz=Q_wc,
+            position=t_wc,
             image=image,
         )
 
@@ -264,6 +275,22 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
             axes_radius=0.02,
         )
 
+        if 1:
+            vertices = world4d[i]['vertices']
+            vertices = copy.deepcopy(vertices)
+            for tid, verts in zip(track_id, vertices):
+                print(verts.shape)
+                transformed_verts = (R_cw @ verts.T).T + t_cw
+                mesh_nodes_in_cam_frame.append(
+                    server.scene.add_mesh_simple(
+                        name=f"/frames/t{i}/frustum/axes/human_{tid}",
+                        vertices=transformed_verts,
+                        faces=faces,
+                        flat_shading=False,
+                        wireframe=False,
+                        color=np.array([0, 255, 0]),
+                    )
+                )
 
     # Add floor
     if floor is not None:
@@ -276,7 +303,6 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
             wireframe=True,
             color=(50, 50, 50),
         )
-
 
     # Hide all but the current frame.
     for i, frame_node in enumerate(frame_nodes):
@@ -291,10 +317,7 @@ def viser_vis_world4d(images, world4d, faces, init_fps=25, block=False, floor=No
                 gui_timestep.value = (gui_timestep.value + 1) % num_frames
 
             time.sleep(1.0 / gui_framerate.value)
-    
+
     gui = [gui_playing, gui_timestep, gui_framerate, num_frames]
 
     return server, gui
-
-
-

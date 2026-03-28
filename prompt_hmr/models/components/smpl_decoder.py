@@ -105,9 +105,9 @@ class SMPLDecoder(nn.Module):
 
         return t_full
     
-
     def initialize(self,):
         if self.inverse_depth:
+            # 10m 经验值，数据集里面可能是10m左右，为了让训练更加能稳定
             init_depth = torch.tensor([[1/10.]])
         else:
             init_depth = torch.tensor([[10.]])

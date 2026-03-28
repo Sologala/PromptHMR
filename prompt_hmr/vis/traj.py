@@ -137,13 +137,51 @@ def get_floor_mesh(pred_vert_gr, z_start=0, z_end=-1, scale=1.5, floor_color=Non
     cz = cz.item()
 
     if floor_color is None:
-        v, f, vc, fc = checkerboard_geometry(length=scale, c1=cx, c2=cz, up="y")
+        v, f, vc, fc = checkerboard_geometry(length=scale, c1=cx, c2=cz, up="z")
     else:
-        v, f, vc, fc = checkerboard_geometry(length=scale, c1=cx, c2=cz, up="y",
+        v, f, vc, fc = checkerboard_geometry(length=scale, c1=cx, c2=cz, up="z",
                                             color0=floor_color[0],
                                             color1=floor_color[1],)
     vc = vc[:, :3] * 255
   
+    return [v, f, vc]
+
+def get_floor_fix_range(range_x, range_y, z_start = 0, z_end = -1, scale = 1.5, floor_color = None):
+    """Return a fixed floor based on X/Z range.
+
+    :param range_x: tuple/list of (x_min, x_max)
+    :param range_y: tuple/list of (z_min, z_max)
+    :param z_start: unused in the fixed range path (kept for interface compatibility)
+    :param z_end: unused in the fixed range path (kept for interface compatibility)
+    :param scale: scale multiplier relative to the max axis range
+    :param floor_color: optional two colors for checkerboard squares
+    """
+
+    # ensure inputs are numpy-like
+    x0, x1 = float(range_x[0]), float(range_x[1])
+    y0, y1 = float(range_y[0]), float(range_y[1])
+
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+
+    # size of floor patch
+    length = max(dx, dy) * scale
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+
+    if floor_color is None:
+        v, f, vc, fc = checkerboard_geometry(length=length, c1=cx, c2=cy, up="z")
+    else:
+        v, f, vc, fc = checkerboard_geometry(
+            length=length,
+            c1=cx,
+            c2=cy,
+            up="z",
+            color0=floor_color[0],
+            color1=floor_color[1],
+        )
+    vc = vc[:, :3] * 255
+
     return [v, f, vc]
 
 

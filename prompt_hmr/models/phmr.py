@@ -101,6 +101,7 @@ class PHMR(pl.LightningModule):
 
     def process_output(self, output, use_mean_hands): 
         K = output['cam_int']
+        # 去掉batch dim
         transl = output['transl'].reshape(-1, 3) 
         shape = output['betas'].reshape(-1, 10)
         pose = output['pose'].reshape(-1, 22, 6)
@@ -109,8 +110,16 @@ class PHMR(pl.LightningModule):
 
         # smplx
         with autocast('cuda', enabled=False):
+            # 默认就是root transl
             if self.transl_type == 'root':
-                root = self.smplx(betas=shape).joints[:,0]
+                root = self.smplx(betas=shape).joints[:, 0]
+                """ 
+                    pelvis(root) 是smplx的旋转中心，但是并不是坐标系的原点。smpl的坐标系原点为胸中心。
+                    这里的 joints[:, 0] 取得就是髋关节中心pelvis在局部坐标
+                    减去这个root，即为将坐标系原点变换到髋关节                    
+                    人体的smpl坐标系是一个 Y朝向前，X右，Z朝后的RHS
+                """
+                # print(root.detach())  
                 transl = transl - root.detach()
                 output['transl'] = transl
 

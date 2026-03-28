@@ -22,11 +22,13 @@ from smplcodec import SMPLCodec
 
 
 class Pipeline:
-    def __init__(self, static_cam=False):
+    def __init__(self, static_cam=False, shift_fps=10):
         self.images = None
         self.cfg = OmegaConf.load("pipeline/config.yaml")
         self.cfg.static_cam = static_cam
-        
+        self.shrink_fps = shift_fps   
+
+
         checkpoint_dir = 'data/pretrain'
         self.data_dict = {
             'droid': os.path.join(checkpoint_dir, 'droid.pth'), 
@@ -43,41 +45,39 @@ class Pipeline:
             num_betas=10
         )
 
-
     def load_frames(self, input_video, output_folder, read_frames=True):
         if read_frames == True:
             images, seq_folder, fps = load_video_frames(
-                input_video, 
-                output_folder=output_folder, 
+                input_video,
+                output_folder=output_folder,
                 max_height=896,
                 max_fps=60,
             )
-        else: 
-            # this currently will cause issue with sam2 
+        else:
+            # this currently will cause issue with sam2
             images, seq_folder, img_folder, fps = prepare_inputs(
-                input_video, 
-                output_folder=output_folder, 
+                input_video,
+                output_folder=output_folder,
                 max_height=896,
                 max_fps=60,
             )
         self.fps = fps
         return images, seq_folder
 
-
     def run_detect_track(self, ):
         if self.cfg.tracker == 'bytetrack':
             print("running detect_track with bytetrack")
             tracks = detect_track(self.images,
-                                  bbox_interp=self.cfg.bbox_interp)
-            print("tracking done: ", tracks)
+                                  bbox_interp=self.cfg.bbox_interp, savedir=self.seq_folder, visualization=True)
             print("run segmenting")
             masks = segment.segment_subjects(self.images)
-            print("segmenting done: ", masks)
-            
+            print("segmenting done")
+
         elif self.cfg.tracker == 'sam2':
+            print("running detect_track with sam2")
             tracks, masks = detect_segment_track_sam(
-                self.images, 
-                self.seq_folder, 
+                self.images,
+                self.seq_folder,
                 self.data_dict,
                 debug_masks=False,
                 sam2_type='tiny',
@@ -88,25 +88,25 @@ class Pipeline:
                 height_thresh=self.cfg.det_height_thresh,
                 bbox_interp=self.cfg.bbox_interp
             )
-            
+
         self.results['masks'] = masks
         self.results['people'] = tracks
         self.results['has_tracks'] = True
 
-
     def estimate_2d_keypoints(self,):
-        model = load_vit_model(model_path='data/pretrain/vitpose-h-coco_25.pth')
+        model = load_vit_model(
+            model_path='data/pretrain/vitpose-h-coco_25.pth')
         for k, v in self.results['people'].items():
-            kpts_2d = estimate_kp2ds_from_bbox_vitpose(model, self.images, v['bboxes'], k, v['frames'])
+            kpts_2d = estimate_kp2ds_from_bbox_vitpose(
+                model, self.images, v['bboxes'], k, v['frames'])
             kpts_2d = convert_kps(kpts_2d, 'vitpose25', 'openpose')
             self.results['people'][k]['keypoints_2d'] = kpts_2d
             coco_kp2d = convert_kps(kpts_2d, 'ophandface', 'cocoophf')
             self.results['people'][k]['vitpose'] = coco_kp2d
-            
+
         self.results['has_2d_kpts'] = True
         del model
         return
-    
 
     def hps_estimation(self,):
         if self.cfg.tracker == 'sam2':
@@ -291,18 +291,18 @@ class Pipeline:
                 elif isinstance(v, torch.Tensor):
                     d[k] = v.detach().cpu().numpy()
 
-        images, seq_folder = self.load_frames(input_video, 
-                                              output_folder)
+        images, seq_folder = self.load_frames(input_video,
+                                              output_folder, read_frames=False)
 
         self.images = images[:max_frame]
         self.seq_folder = seq_folder
         self.cfg.seq_folder = seq_folder
 
-        if os.path.isfile(f'{seq_folder}/results.pkl'):
-            print('Loading available results...')
-            self.results = joblib.load(f'{seq_folder}/results.pkl')
-            return self.results
-        
+        # if os.path.isfile(f'{seq_folder}/results.pkl'):
+        #     print('Loading available results...')
+        #     self.results = joblib.load(f'{seq_folder}/results.pkl')
+        #     return self.results
+
         self.results = {
             'camera': {},
             'people': {},
@@ -331,27 +331,27 @@ class Pipeline:
                                         first_frame_idx=0)       
             self.results['spec_calib'] = spec_calib
 
-        ### detect_segment_track 
+        # detect_segment_track
         if not self.results['has_tracks']:
             print("Running detect, segment, and track pipeline...")
             self.run_detect_track()
 
-        ### slam
+        # slam
         if not self.results['has_slam']:
             print("Running camera motion estimation...")
             self.camera_motion_estimation(static_cam)
 
-        ### keypoints detection
+        # keypoints detection
         if not self.results['has_2d_kpts']:
             print("Estimating 2D keypoints...")
             self.estimate_2d_keypoints()
-        
-        ### hps
+
+        # hps
         if not self.results['has_hps_cam']:
             print("Running human mesh estimation...")
             self.hps_estimation()
 
-        ### convert hps to world coordinate
+        # convert hps to world coordinate
         if not self.results['has_hps_world']:
             print("Running world coordinates estimation...")
             self.world_hps_estimation()

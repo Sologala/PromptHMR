@@ -1,7 +1,7 @@
 calib: null
 focal: null
 stride: 1
-tracker: sam2
+tracker: bytetrack
 kp2d_detector: vitpose
 depth_method: metric3d_vit_large
 use_depth: false
