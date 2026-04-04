@@ -20,7 +20,10 @@ def main(input_video='data/examples/boxing_short.mp4',
          run_viser=False,
          viser_total=1500,
          viser_subsample=1,
-         output_folder=None):
+         output_folder=None,
+         use_streaming=False,
+         use_chunked_processing=False,
+         chunk_size=300):
     print("starting demo_video.py")
     smplx = SMPLX_Layer(SMPLX_PATH).cuda()
     if output_folder is None:
@@ -29,54 +32,15 @@ def main(input_video='data/examples/boxing_short.mp4',
     else:
         output_folder = output_folder
 
-    pipeline = Pipeline(static_cam=static_camera)
-    results = pipeline.__call__(input_video, 
-                                output_folder, 
+    pipeline = Pipeline(
+        static_cam=static_camera,
+        use_streaming=use_streaming,
+        use_chunked_processing=use_chunked_processing,
+        chunk_size=chunk_size
+    )
+    results = pipeline.__call__(input_video,
+                                output_folder,
                                 save_only_essential=True)
-    # Viser
-    if run_viser:
-        # Downsample for viser visualization
-        images = pipeline.images[:viser_total][::viser_subsample]
-        world4d = pipeline.create_world4d(step=viser_subsample, total=viser_total)
-        world4d = {i:world4d[k] for i,k in enumerate(world4d)}
-
-        # Get vertices
-        all_verts = []
-        for k in world4d:
-            world3d = world4d[k]
-            if len(world3d['track_id']) == 0: # no people
-                continue
-            rotmat = axis_angle_to_matrix(world3d['pose'].reshape(-1, 55, 3))
-            verts = smplx(global_orient = rotmat[:,:1].cuda(),
-                        body_pose = rotmat[:,1:22].cuda(),
-                        betas = world3d['shape'].cuda(),
-                        transl = world3d['trans'].cuda()).vertices.cpu().numpy()
-            
-            world3d['vertices'] = verts
-            all_verts.append(torch.tensor(verts, dtype=torch.bfloat16))
-
-        all_verts = torch.cat(all_verts)
-        [gv, gf, gc] = get_floor_mesh(all_verts, scale=2)
-
-    
-        server, gui = viser_vis_world4d(images, 
-                                        world4d, 
-                                        smplx.faces, 
-                                        floor=[gv, gf],
-                                        init_fps=30/viser_subsample)
-        
-        url = f'https://localhost:{server.get_port()}'
-        print(f'Please use this url to view the results: {url}')
-        print('For longer video, it will take a few seconds for the webpage to load.')
-
-        gui_playing, gui_timestep, gui_framerate, num_frames = gui
-        while True:
-            # Update the timestep if we're playing.
-            if gui_playing.value:
-                gui_timestep.value = (gui_timestep.value + 1) % num_frames
-
-            time.sleep(1.0 / gui_framerate.value)
-        
 
 
 if __name__ == '__main__':

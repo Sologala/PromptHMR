@@ -102,7 +102,7 @@ class PHMR(pl.LightningModule):
     def process_output(self, output, use_mean_hands): 
         K = output['cam_int']
         # 去掉batch dim
-        transl = output['transl'].reshape(-1, 3) 
+        transl = output['transl'].reshape(-1, 3)
         shape = output['betas'].reshape(-1, 10)
         pose = output['pose'].reshape(-1, 22, 6)
         rotmat = rotation_6d_to_matrix(pose)

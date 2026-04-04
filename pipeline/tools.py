@@ -92,12 +92,11 @@ def detect_track(images, savedir=None, visualization=False,
 
     # Yolo + Bytetrack
     yolo = YOLO("data/yolo11x.pt")
-    box_annotator = sv.BoxAnnotator(thickness=5)
     tracker = sv.ByteTrack(track_activation_threshold=bytetrack_thresh,
                             minimum_matching_threshold=bytetrack_match)
     tracks = defaultdict(lambda: defaultdict(list))
 
-    for i in tqdm(range(len(images))):
+    for i in tqdm(range(len(images)), desc='Tracking with Bytetrack'):
         img = images[i]
         if isinstance(img, str):
             img = cv2.imread(images[i])[:, :, ::-1]
@@ -109,47 +108,30 @@ def detect_track(images, savedir=None, visualization=False,
         for k in range(len(detections)):
             d = detections[k]
             tid = d.tracker_id.item()
-            tracks[tid]['masks'].append(np.full(img.shape[:2], False))
-            tracks[tid]['bboxes'].append(d.xyxy[0])
-            tracks[tid]['frames'].append(i)
-
-        # Save visualization
-        if visualization:
-            height, width, layers = img.shape
-            size = (width, height)
-            annotated_frame = _draw_tracker_visualization(img, detections)
-
-            try:
-                out.write(annotated_frame)
-            except Exception:
-                video_path = f'{savedir}/vis.mp4'
-                print(f'Start writing video to {video_path} ...')
-                fourcc, fps = cv2.VideoWriter_fourcc(*'mp4v'), 30
-                out = cv2.VideoWriter(video_path, fourcc, fps, size)
+            # 这里如果框太小了就不添加了
+            box_area = (d.xyxy[0][2] - d.xyxy[0][0]) * \
+                (d.xyxy[0][3] - d.xyxy[0][1])
+            if box_area > 100:
+                tracks[tid]['bboxes'].append(d.xyxy[0])
+                tracks[tid]['frames'].append(i)
 
     print(f"Total tracks: {len(tracks)}")
 
     for k in tracks:
-        masks = np.stack(tracks[k]['masks'])
         bboxes = np.stack(tracks[k]['bboxes'])
         frames = np.array(tracks[k]['frames'])
 
         if bbox_interp:
-            interp_bboxes, interp_frames, interp_masks = interpolate_bboxes(bboxes, frames, masks, fn='linear')
+            interp_bboxes, interp_frames, interp_masks = interpolate_bboxes(
+                bboxes, frames, None, fn='linear')
         else:
-            interp_bboxes, interp_frames, interp_masks = bboxes, frames, masks
-        
+            interp_bboxes, interp_frames, interp_masks = bboxes, frames, None
+
         tracks[k]['track_id'] = k
         tracks[k]['frames'] = interp_frames
         tracks[k]['bboxes'] = interp_bboxes
-        tracks[k]['masks'] = interp_masks
-        tracks[k]['detected'] = np.sum(interp_masks, axis=(1, 2)) > 1
-        
+        tracks[k]['detected'] = len(interp_bboxes)
     tracks = recursive_to_dict(tracks)
-
-    if visualization:
-        out.release()
-        del out
 
     return tracks
 
@@ -570,7 +552,7 @@ def interpolate_bboxes_no_mask(bboxes, frames, fn='linear'):
 
     return interp_bboxes, all_frames
 
-def interpolate_bboxes(bboxes, frames, masks, fn='linear'):
+def interpolate_bboxes(bboxes, frames, masks=None, fn='linear'):
     '''
     bboxes: numpy array of shape (len(frames), 4) representing the bounding boxes in x, y, x, y format
     frames: example [0, 1, 2, 8, 9, 10] -> here the frames 3-7 are missing and should be interpolated
@@ -589,9 +571,11 @@ def interpolate_bboxes(bboxes, frames, masks, fn='linear'):
     else:
         raise ValueError("Invalid interpolation function. Choose 'spline' or 'linear'.")   
     
-    all_masks = np.full([len(all_frames), masks.shape[1], masks.shape[2]], False, dtype=bool)
-    indices = frames - all_frames[0]
-    all_masks[indices] = masks
+    all_masks = None
+    if masks:
+        all_masks = np.full([len(all_frames), masks.shape[1], masks.shape[2]], False, dtype=bool)
+        indices = frames - all_frames[0]
+        all_masks[indices] = masks
 
     return interp_bboxes, all_frames, all_masks
 

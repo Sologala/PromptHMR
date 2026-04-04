@@ -2,6 +2,7 @@ import time
 import cv2
 import numpy as np
 import copy
+from tqdm import tqdm
 from .ViTPose.easy_vitpose.inference import VitInference
 
 try:
@@ -22,7 +23,7 @@ def load_vit_model(model_path=None, model_name= 'h',is_video=True, single_pose=F
 def estimate_kp2ds_from_bbox_vitpose(model, images, bboxes, track_id, frame_inds):
     all_kp2ds = []
 
-    for ind, ith in enumerate(frame_inds):
+    for ind, ith in tqdm(enumerate(frame_inds), total=len(frame_inds), desc=f'Estimating keypoints for track {track_id}'):
         img, bbox = images[ind], bboxes[ind]
 
         if isinstance(img, str):

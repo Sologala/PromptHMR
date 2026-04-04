@@ -1,8 +1,11 @@
+import os
+import cv2
 import numpy as np
 from PIL import Image, ImageOps
 from omegaconf import OmegaConf
 import scipy.signal as signal
 from scipy.ndimage import gaussian_filter1d
+from tqdm import tqdm
 
 import torch
 from torch.amp import autocast
@@ -16,6 +19,8 @@ from pipeline.gvhmr.hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
 from pipeline.gvhmr.hmr4d.utils.geo_transform import compute_cam_angvel
 from pipeline.gvhmr.hmr4d.utils.geo.hmr_cam import get_bbx_xys_from_xyxy, normalize_kp2d
 from prompt_hmr.utils.rotation_conversions import axis_angle_to_matrix
+from pipeline.streaming_dataset import StreamingVideoDataset, PromptHMRVideoDatasetStreaming
+from pipeline.detector.segment import load_mask_from_disk, load_masks_from_disk
 
 
 def load_video_head():
@@ -31,13 +36,21 @@ def load_video_head():
 
 
 class PromptHMR_Video():
-    def __init__(self,):
+    def __init__(self, use_streaming=False, mask_cache_dir=None):
         super().__init__()
         self.model = load_phmr('data/pretrain/phmr/checkpoint.ckpt')
         self.vid_head = load_video_head()
+        self.use_streaming = use_streaming
+        self.mask_cache_dir = mask_cache_dir
     
     @torch.no_grad()
-    def run(self, images, results, mask_prompt=True):
+    def run(self, images, results, mask_prompt=True, use_streaming=None, mask_cache_dir=None):
+        # Use instance settings if not provided
+        if use_streaming is None:
+            use_streaming = self.use_streaming
+        if mask_cache_dir is None:
+            mask_cache_dir = self.mask_cache_dir
+        
         tracks = results['people']
         camera = results['camera']
         
@@ -50,7 +63,25 @@ class PromptHMR_Video():
         cam_intrinsic[0, 2] = img_center[0].item() if isinstance(img_center, np.ndarray) else img_center[0]
         cam_intrinsic[1, 2] = img_center[1].item() if isinstance(img_center, np.ndarray) else img_center[1]
         
-        dataset = PromptHMRVideoDataset(images, tracks, cam_intrinsic)
+        # Use streaming dataset if requested
+        if use_streaming:
+            print("create streaming dataset with", len(images), "frames")
+            streaming_dataset = StreamingVideoDataset(
+                images, max_memory_frames=32)
+
+            dataset = PromptHMRVideoDatasetStreaming(
+                streaming_dataset, tracks, cam_intrinsic,
+                save_masks_to_disk=True,
+                mask_cache_dir=mask_cache_dir
+            )
+        else:
+            # Check if masks are stored as paths on disk
+            masks_are_paths = results.get('masks_are_paths', False)
+            mask_dir = results.get('mask_dir', None)
+            dataset = PromptHMRVideoDataset(images, tracks, cam_intrinsic, 
+                                           masks_are_paths=masks_are_paths, 
+                                           mask_dir=mask_dir)
+        
         dataloader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=0, collate_fn=lambda x: x)
 
         # 先创建空列表
@@ -61,7 +92,13 @@ class PromptHMR_Video():
             tracks[k]['prhmr_img_feats'] = []
         
         # Image model
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc='Running image model (PromptHMR)', total=len(dataloader)):
+            # Load masks on-demand for streaming dataset
+            if use_streaming:
+                masks = dataset.load_masks_for_batch(batch)
+                for i, item in enumerate(batch):
+                    item['masks'] = masks[i * len(item['track_ids']):(i + 1) * len(item['track_ids'])]
+            
             with autocast('cuda'):
                 output = self.model(batch, mask_prompt=mask_prompt)
             """ model output :
@@ -70,7 +107,7 @@ class PromptHMR_Video():
                'pose',: phmr 模型预测的6d 旋转 22 x 6
                'rotmat': 转换为3x3的旋转矩阵 22 x 3 x 3
                'betas',: phmr 模型预测的 shape 参数 10
-               'transl': phmr 模型预测的 相机系下 平移 3 
+               'transl': phmr 模型预测的 相机系下 髋关节 平移 3
                'transl_c', ：phmr 模型预测的归一化相机系下的 pxy
                'inv_depth_c', : phmr 预测的 逆深度
                'cam_int', : 相机内参
@@ -100,12 +137,11 @@ class PromptHMR_Video():
             tracks[k]['prhmr_img_feats'] = torch.stack(tracks[k]['prhmr_img_feats']).float()
 
         # Video model
-        print(f"Running PRHMR-Vid for tracks")
-        for idx, k in enumerate(list(tracks.keys())):
+        for idx, k in tqdm(enumerate(list(tracks.keys())), total=len(tracks), desc='Running video model (PRHMR-Vid)'):
             seqlen = tracks[k]['prhmr_img_feats'].shape[0]
             R_w2c = torch.eye(3).repeat(seqlen, 1, 1)
             cam_angvel = compute_cam_angvel(R_w2c)
-            bbx_xys = get_bbx_xys_from_xyxy(torch.from_numpy(tracks[k]['bboxes'])).numpy()
+            bbx_xys = get_bbx_xys_from_xyxy(torch.from_numpy(np.array(tracks[k]['bboxes']))).numpy()
             
             smoothed = np.array([signal.medfilt(param, 11) for param in bbx_xys.T]).T
             bbx_xys = np.array([gaussian_filter1d(traj, 3) for traj in smoothed.T]).T
@@ -183,9 +219,11 @@ def pad_image(item, IMG_SIZE=896):
     
     
 class PromptHMRVideoDataset(Dataset):
-    def __init__(self, images, tracks, cam_int):
+    def __init__(self, images, tracks, cam_int, masks_are_paths=False, mask_dir=None):
         self.images = images
         self.tracks = tracks
+        self.masks_are_paths = masks_are_paths
+        self.mask_dir = mask_dir
         
         frames = set([x for t in tracks.values() for x in t['frames'].tolist()])
         self.frames = sorted(list(frames))
@@ -203,6 +241,8 @@ class PromptHMRVideoDataset(Dataset):
     def __getitem__(self, idx):
         idx = self.frames[idx]
         image_cv = self.images[idx]
+        if isinstance(image_cv, str):
+            image_cv = cv2.imread(image_cv)[..., ::-1]
         
         boxes = []
         kpts = []
@@ -214,15 +254,28 @@ class PromptHMRVideoDataset(Dataset):
                 bbox = np.concatenate([bbox, np.ones_like(bbox)[...,:1]], axis=-1)
                 
                 kpt = track['keypoints_2d'][track['frames']==idx][:, :25]
-                obj_masks = track['masks'][track['frames']==idx]
                 
                 mm = []
-                for mask in obj_masks:
-                    msk_size = int(896/14 * 4)
-                    mask = Image.fromarray(mask)
-                    mask = ImageOps.contain(mask, (msk_size,msk_size))
-                    mask = ImageOps.pad(mask, size=(msk_size,msk_size))
-                    mm.append(np.array(mask))
+                if self.masks_are_paths:
+                    mask_path = os.path.join(self.mask_dir, f"mask_{idx:08d}.npz")
+                    if os.path.exists(mask_path):
+                        obj_mask = load_mask_from_disk(mask_path)
+                        msk_size = int(896/14 * 4)
+                        mask = Image.fromarray(obj_mask)
+                        mask = ImageOps.contain(mask, (msk_size,msk_size))
+                        mask = ImageOps.pad(mask, size=(msk_size,msk_size))
+                        mm.append(np.array(mask))
+                    else:
+                        msk_size = int(896/14 * 4)
+                        mm.append(np.ones((msk_size, msk_size), dtype=np.float32))
+                else:
+                    obj_masks = track['masks'][track['frames']==idx]
+                    for mask in obj_masks:
+                        msk_size = int(896/14 * 4)
+                        mask = Image.fromarray(mask)
+                        mask = ImageOps.contain(mask, (msk_size,msk_size))
+                        mask = ImageOps.pad(mask, size=(msk_size,msk_size))
+                        mm.append(np.array(mask))
                 mm = np.array(mm)
                 mm = torch.from_numpy(mm).float()
                 

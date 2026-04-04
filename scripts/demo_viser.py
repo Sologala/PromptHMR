@@ -16,6 +16,7 @@ Joint overlay export / OpenCV step preview are controlled by module constants be
 
 from __future__ import annotations
 
+from glob import glob
 import os
 import sys
 import time
@@ -153,63 +154,19 @@ def render_joints_overlay(
     return cv2.cvtColor(canvas_bgr, cv2.COLOR_BGR2RGB)
 
 
-def _load_rgb_frames(
+def _load_frames_lists(
     results_dir: str,
-    results: dict,
-    images_npz: Optional[str],
-    images_folder: Optional[str],
-    video: Optional[str],
 ) -> np.ndarray:
-    n_expect = len(results['camera']['pred_cam_R'])
+    images_dir = os.path.join(results_dir, 'frames')
+    image_files = sorted(glob(os.path.join(images_dir, '*.jpg')))
+    # print(image_files)
+    n_images = len(image_files)
 
-    npz_path = images_npz or os.path.join(results_dir, 'merged_frames.npz')
-    if os.path.isfile(npz_path):
-        images = np.load(npz_path)['images']
-        if len(images) < n_expect:
-            raise ValueError(
-                f'{npz_path} has {len(images)} frames but results.pkl expects {n_expect}.'
-            )
-        if len(images) > n_expect:
-            images = images[:n_expect]
-        return images
-
-    if images_folder is not None:
-        if not os.path.isdir(images_folder):
-            raise FileNotFoundError(images_folder)
-        imgs, _, _ = load_video_frames(
-            images_folder,
-            output_folder=results_dir,
-            max_height=896,
-            max_fps=60,
-        )
-    elif video is not None:
-        if not os.path.isfile(video):
-            raise FileNotFoundError(video)
-        imgs, _, _ = load_video_frames(
-            video,
-            output_folder=results_dir,
-            max_height=896,
-            max_fps=60,
-        )
-    else:
-        raise FileNotFoundError(
-            f'No merged_frames.npz in {results_dir}. '
-            'Pass --video (source clip) or --images-folder (extracted frames), '
-            'or --images-npz pointing to an .npz with array "images".'
-        )
-
-    if len(imgs) < n_expect:
-        raise ValueError(
-            f'Loaded {len(imgs)} RGB frames but results.pkl has {n_expect} camera frames.'
-        )
-    if len(imgs) > n_expect:
-        imgs = imgs[:n_expect]
-    return imgs
+    return image_files
 
 
 def main(
     results_dir: str = 'results/forest_riding',
-    video: Optional[str] = None,
     images_folder: Optional[str] = None,
     images_npz: Optional[str] = None,
     fps: Optional[float] = None,
@@ -228,8 +185,7 @@ def main(
         raise SystemExit(1)
 
     results = joblib.load(pkl_path)
-    images = _load_rgb_frames(results_dir, results,
-                              images_npz, images_folder, video)
+    image_lists = _load_frames_lists(results_dir)
 
     if fps is None:
         fps = float(results.get('merged_fps', 30.0))
@@ -237,15 +193,15 @@ def main(
     smplx = SMPLX_Layer(SMPLX_PATH).cuda()
     vis_pipeline = Pipeline(static_cam=static_camera)
     vis_pipeline.results = results
-    vis_pipeline.images = images
+    vis_pipeline.images_list = image_lists
     vis_pipeline.fps = fps
     vis_pipeline.cfg.fps = fps
     vis_pipeline.cfg.seq_folder = results_dir
 
-    n_all = len(images)
+    n_all = len(image_lists)
     cap = viser_total if viser_total is not None else n_all
     cap = min(cap, n_all)
-    images_vis = images[:cap][::viser_subsample]
+    images_vis = image_lists[:cap][::viser_subsample]
     world4d = vis_pipeline.create_world4d(step=viser_subsample, total=cap)
     world4d = {i: world4d[k] for i, k in enumerate(sorted(world4d.keys()))}
 
@@ -256,7 +212,9 @@ def main(
     for k in frame_keys:
         world3d = world4d[k]
         ki = int(k)
-        frame_rgb = images_vis[ki]
+        frame_rgb_file = images_vis[ki]
+        frame_rgb = cv2.imread(frame_rgb_file)
+        frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
         h0, w0 = frame_rgb.shape[:2]
 
         rotmat = axis_angle_to_matrix(world3d['pose'].reshape(-1, 55, 3))
@@ -274,12 +232,6 @@ def main(
         T_w2c[:3, :4] = cam4[:3, :4]
 
 
-        out_r = render_joints_overlay(
-            joints, T_w2c, K, (h0, w0), background_rgb=frame_rgb
-        )
-        cv2.imshow('frame', cv2.cvtColor(out_r, cv2.COLOR_RGB2BGR))
-        cv2.waitKey(0)
-
         world3d['vertices'] = verts
         all_verts.append(torch.tensor(verts, dtype=torch.bfloat16))
 
@@ -295,6 +247,7 @@ def main(
         smplx.faces,
         floor=floor_arg,
         init_fps=max(1.0, fps / viser_subsample),
+        subsample=viser_subsample,
     )
 
     url = f'https://localhost:{server.get_port()}'
@@ -302,8 +255,8 @@ def main(
     gui_playing, gui_timestep, gui_framerate, num_frames = gui
     while True:
         # 不按 Playing 自动推进时间轴（只用 Viser 里手动拖 / 点播放）
-        # if gui_playing.value:
-        #     gui_timestep.value = (gui_timestep.value + 1) % num_frames
+        if gui_playing.value:
+            gui_timestep.value = (gui_timestep.value + 1) % num_frames
         time.sleep(1.0 / gui_framerate.value)
 
 

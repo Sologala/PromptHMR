@@ -1,0 +1,3 @@
+[submodule "submodule/lietorch"]
+	path = submodule/lietorch
+	url = https://github.com/princeton-vl/lietorch.git

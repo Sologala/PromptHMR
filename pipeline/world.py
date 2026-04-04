@@ -81,7 +81,7 @@ def world_hps_estimation(cfg, results, smplx):
         pred_shape = pred_smpl['shape'].clone()
         pred_trans = pred_smpl['trans'].clone()
         
-        frame = torch.from_numpy(v['frames'])
+        frame = torch.from_numpy(np.array(v['frames']))
         mean_shape = pred_shape.mean(dim=0, keepdim=True)
         pred_shape = mean_shape.repeat(len(pred_shape), 1)
 
