@@ -47,6 +47,30 @@ def world_hps_estimation(cfg, results, smplx):
     pred_cam_R = torch.tensor(pred_cam['pred_cam_R'])
     pred_cam_T = torch.tensor(pred_cam['pred_cam_T'])
 
+    # Early exit: if camera motion is identity (no SLAM), skip world transform.
+    # All outputs stay in per-frame camera coordinates.
+    is_static = bool(torch.allclose(pred_cam_R, torch.eye(3)[None].repeat_interleave(len(pred_cam_R), 0)) and
+                     torch.allclose(pred_cam_T, torch.zeros_like(pred_cam_T)))
+    if is_static:
+        n_frames = len(pred_cam_R)
+        results['camera_world'] = {
+            'pred_cam_R': pred_cam_R.numpy(),
+            'pred_cam_T': pred_cam_T.numpy(),
+            'Rwc': np.eye(3)[None].repeat(n_frames, 0),
+            'Twc': np.zeros((n_frames, 3)),
+            'Rcw': np.eye(3)[None].repeat(n_frames, 0),
+            'Tcw': np.zeros((n_frames, 3)),
+            'img_focal': img_focal,
+            'img_center': img_center,
+            'viz_scale': 1.0,
+            'viz_center': [0.0, 0.0, 0.0],
+        }
+        return results
+
+    # Full world transform with camera motion (requires DROID-SLAM data)
+    pred_cam_R = torch.tensor(pred_cam['pred_cam_R'])
+    pred_cam_T = torch.tensor(pred_cam['pred_cam_T'])
+
     if cfg.smooth_cam:
         min_cutoff = 0.001
         beta = 0.1

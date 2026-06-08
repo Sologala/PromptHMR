@@ -9,13 +9,13 @@ from omegaconf import OmegaConf
 
 from smplx import SMPLX
 from pipeline.detector import segment
-from pipeline.detector.segment import load_masks_from_disk
 from pipeline.detector.vitpose_estimator import load_vit_model, estimate_kp2ds_from_bbox_vitpose
 from pipeline.kp_utils import convert_kps
 from pipeline.utils import prepare_inputs, load_video_frames, interpolate_bboxes
 from pipeline.tools import detect_track, detect_segment_track_sam, est_camera, est_calib
 from pipeline.phmr_vid import PromptHMR_Video
-from pipeline.camera import run_metric_slam, calibrate_intrinsics, run_slam
+# DROID-SLAM removed — static camera is used instead
+# from pipeline.camera import run_metric_slam, calibrate_intrinsics, run_slam
 from pipeline.spec import run_cam_calib
 from pipeline.world import world_hps_estimation
 from pipeline.postprocessing import post_optimization
@@ -234,103 +234,39 @@ class Pipeline:
 
 
     def camera_motion_estimation(self, static_cam = False):
-        ##### Run Masked DROID-SLAM #####
-        
-        opt_intr = False if self.cfg.use_depth else True
-        keyframes = None
+        """Estimate camera intrinsics. Always uses static camera (no SLAM motion estimation).
 
-        if self.cfg.static_cam or static_cam:
-            print("Using static camera assumption")
-            static_cam = True
-            if self.cfg.calib is None:
-                # Only need first frame for calib estimation, avoid loading all frames
-                first_frame = cv2.imread(self.images_list[0])[..., ::-1]
-                cam_int = est_calib([first_frame])
-            else:
-                cam_int = np.loadtxt(self.cfg.calib)
-                opt_intr = False
-
+        Camera intrinsics are estimated from image dimensions or loaded from config.
+        Camera motion is set to identity (no camera movement between frames).
+        All SMPL outputs will be in per-frame camera coordinates.
+        """
+        # Estimate camera intrinsics
+        if self.cfg.calib is not None:
+            cam_int = np.loadtxt(self.cfg.calib)
+        elif self.cfg.focal is not None:
+            cam_int = est_calib([cv2.imread(self.images_list[0])[..., ::-1]])
+            cam_int[0] = self.cfg.focal
+            cam_int[1] = self.cfg.focal
         else:
-            # Need all frames and masks for SLAM
-            if isinstance(self.images, list):
-                print(f"Loading frames for camera motion estimation...")
-                images_data = self.get_frames_as_numpy()
-            else:
-                images_data = self.images
-            
-            masks = self.results['masks']
-            if self.results.get('masks_are_paths', False):
-                print(f"Loading masks from disk...")
-                masks = load_masks_from_disk(masks)
-            masks = torch.from_numpy(masks)
-            
-            assert masks.shape[0] == len(images_data), f"Masks and images should be same length {masks.shape[0]} != {len(images_data)}"
-            
-            if self.cfg.calib is None:
-                if self.cfg.focal is None and opt_intr == False:
-                    try:
-                        if self.cfg.calibMethod == 'ba':
-                            _, _, cam_int, keyframes = run_slam(
-                                images_data, masks=masks, opt_intr=True, 
-                                stride=self.cfg.calib_stride,
-                            )
-                        elif self.cfg.calibMethod == 'iterative':    
-                            cam_int = calibrate_intrinsics(self.cfg.img_folder, masks)
-                    except ValueError as e:
-                        static_cam = True
-                        print(e)
-                        print("Warning: probably there is not much camera motion in the video!!")
-                        cam_int = est_calib(images_data)
+            first_frame = cv2.imread(self.images_list[0])[..., ::-1]
+            cam_int = est_calib([first_frame])
 
-                elif self.cfg.focal is not None:
-                    cam_int = est_calib(images_data)
-                    cam_int[0] = self.cfg.focal
-                    cam_int[1] = self.cfg.focal
-                    opt_intr = False
-                else:
-                    cam_int = est_calib(images_data)
-            else:
-                cam_int = np.loadtxt(self.cfg.calib)
-                opt_intr = False
-        
-        if static_cam:
-            total_frames = self.get_frame_count()
-            cam_R = torch.eye(3)[None].repeat_interleave(total_frames, 0)
-            cam_T = torch.zeros((total_frames, 3))
-            print("Warning: probably there is not much camera motion in the video!!")
-            print("Setting camera motion to zero")
-        else:
-            try:
-                cam_R, cam_T, cam_int = run_metric_slam(
-                    images_data, 
-                    masks=masks, 
-                    calib=cam_int, 
-                    monodepth_method=self.cfg.depth_method, 
-                    use_depth_inp=self.cfg.use_depth,
-                    stride=self.cfg.stride,
-                    opt_intr=opt_intr,
-                    save_depth=self.cfg.save_depth,
-                    keyframes=keyframes,
-                )
-            except ValueError as e:
-                if str(e).startswith("not enough values to unpack"):
-                    cam_R = torch.eye(3)[None].repeat_interleave(len(masks), 0)
-                    cam_T = torch.zeros((len(masks), 3))
-                    print("Warning: probably there is not much camera motion in the video!!")
-                    print("Setting camera motion to zero")
-                else:
-                    raise e
-                    
+        # Static camera: identity rotation, zero translation for all frames
+        total_frames = self.get_frame_count()
+        cam_R = torch.eye(3)[None].repeat_interleave(total_frames, 0)
+        cam_T = torch.zeros((total_frames, 3))
+        print("Using static camera (no DROID-SLAM). All outputs in camera coordinates.")
+
         print("Camera intrinsics:", cam_int)
         camera = {
-            'pred_cam_R': cam_R.numpy(), 
-            'pred_cam_T': cam_T.numpy(), 
-            'img_focal': cam_int[0], 
+            'pred_cam_R': cam_R.numpy(),
+            'pred_cam_T': cam_T.numpy(),
+            'img_focal': cam_int[0],
             'img_center': cam_int[2:]
         }
         print("cam focal length: ", cam_int[0])
         self.results['camera'] = camera
-        self.results['has_slam'] = True
+        self.results['has_slam'] = False  # No SLAM used
         return
 
 
@@ -603,10 +539,15 @@ class Pipeline:
                         trks_in_clip[trkid]['frames'].append(trks['frames'][k])
                         total_boxes += 1
             
+            clip_start_frame = clip[0]
             for tid in trks_in_clip:
                 trks_in_clip[tid]['track_id'] = tid
                 trks_in_clip[tid]['detected'] = len(trks_in_clip[tid]['frames'])
-            
+                # Preserve original global frame numbers
+                trks_in_clip[tid]['original_frames'] = np.array(trks_in_clip[tid]['frames'])
+                # Convert to clip-local (0-based) indices
+                trks_in_clip[tid]['frames'] = np.array(trks_in_clip[tid]['frames']) - clip_start_frame
+
             clip_info["track_ids"] = list(trk_ids_in_clip)
             clip_info["track_info"] = trks_in_clip
             
@@ -683,15 +624,11 @@ class Pipeline:
         self.results['people'] = clip_info["track_info"]
         self.results['has_tracks'] = True
 
-        # Remap frame indices from global video indices to local clip indices
-        first_frame_idx = clip_info["clip_start_frame"]
-        for tid, track in self.results['people'].items():
-            if 'frames' in track:
-                track['frames'] = np.array(track['frames']) - first_frame_idx
-
         # Ensure all track data is numpy (not list)
+        # Note: 'frames' already converted to clip-local indices at clip creation time
+        # 'original_frames' preserves global video frame numbers
         for tid, track in self.results['people'].items():
-            for key in ['bboxes', 'frames', 'keypoints_2d', 'vitpose']:
+            for key in ['bboxes', 'frames', 'original_frames', 'keypoints_2d', 'vitpose']:
                 if key in track and isinstance(track[key], list):
                     track[key] = np.array(track[key])
 
@@ -715,9 +652,25 @@ class Pipeline:
             self.hps_estimation()
 
         # convert hps to world coordinate
+        # DISABLED: No DROID-SLAM → all outputs stay in per-frame camera coordinates
         if not self.results['has_hps_world']:
-            print("Running world coordinates estimation...")
-            self.world_hps_estimation()
+            print("Building camera-space output (world transform disabled)...")
+            # Build minimal camera_world from camera data (identity transform)
+            cam = self.results['camera']
+            n_frames = len(cam['pred_cam_R'])
+            self.results['camera_world'] = {
+                'pred_cam_R': cam['pred_cam_R'],
+                'pred_cam_T': cam['pred_cam_T'],
+                'Rwc': np.eye(3)[None].repeat(n_frames, 0),
+                'Twc': np.zeros((n_frames, 3)),
+                'Rcw': np.eye(3)[None].repeat(n_frames, 0),
+                'Tcw': np.zeros((n_frames, 3)),
+                'img_focal': cam['img_focal'],
+                'img_center': cam['img_center'],
+                'viz_scale': 1.0,
+                'viz_center': [0.0, 0.0, 0.0],
+            }
+            self.results['has_hps_world'] = True
 
         cvt_to_numpy(self.results)
 
@@ -742,16 +695,17 @@ class Pipeline:
         per_body_frame_presence = []
         for k,v in self.results['people'].items():
             out_smpl_f = f'{os.path.abspath(self.output_dir)}/subject-{k}.smpl'
-            
+            # Use camera-space SMPL-X data (no world transform applied)
+            smplx_data = v['smplx_cam']
             SMPLCodec(
-                shape_parameters=v['smplx_world']['shape'].mean(0),
-                body_pose=v['smplx_world']['pose'][:, :22*3].reshape(-1,22,3), 
-                body_translation=v['smplx_world']['trans'],
+                shape_parameters=smplx_data['shape'].mean(0),
+                body_pose=smplx_data['pose'][:, :22*3].reshape(-1,22,3),
+                body_translation=smplx_data['trans'],
                 frame_count=v['frames'].shape[0], frame_rate=float(self.cfg.fps)
             ).write(out_smpl_f)
             smpl_paths.append(out_smpl_f)
             per_body_frame_presence.append([int(v['frames'][0]), int(v['frames'][-1])+1])
-        
+
         export_scene_with_camera(
             smpl_buffers=[open(path, 'rb').read() for path in smpl_paths],
             frame_presences=per_body_frame_presence,
